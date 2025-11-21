@@ -8,6 +8,7 @@
 import math
 import scipy
 import scipy.stats as stats
+import scipy.special
 import numpy as np
 import sys
 import matplotlib.pyplot as plt
@@ -139,7 +140,7 @@ def main():
         MCweight=np.zeros(len(dV))
         beta_dV=np.multiply(dV,beta)
         for x in range(0,n+1):
-          MCweight=np.add(MCweight,(np.divide(np.power(beta_dV, x), float(scipy.misc.factorial(x)))))
+          MCweight=np.add(MCweight,(np.divide(np.power(beta_dV, x), float(scipy.special.factorial(x)))))
         weights=MCweight
         hist, newedgesX = np.histogram(data, bins = binsX, weights=weights)
         hist=prephist(hist,T,cb_max)
@@ -547,7 +548,7 @@ def anharmND(datafull):
         var=np.var(datafull[:,x])
         std=np.std(datafull[:,x])
         print ("variance of "+str(x)+" is : " +str(var)+" Standard Deviation:  "+str(std))
-        hist, edges=np.histogram(datafull[:,x], 100, normed=True)
+        hist, edges=np.histogram(datafull[:,x], 100, density=True)
         hist=np.add(hist,0.000000000000000001)  ###so that distrib
         dx=edges[1]-edges[0]
         S1=-1*np.trapz(np.multiply(hist, np.log(hist)),dx=dx)

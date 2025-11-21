@@ -285,7 +285,7 @@ def ParseCommandline():
 	
 	# --ligand
 	if args.ligand < 0:
-		print("Ligand id should be larger or equal than 0 - quitting with error code 1" % (args.centers))
+		print("Ligand id should be larger or equal than 0 - quitting with error code 1")
 		sys.exit(1)
 	
 	# --trajectories
@@ -334,7 +334,7 @@ def ReadAtomCenters(fname):
 	with f:
 		for LINE in f.readlines():
 			LINE = LINE.strip()
-			if LINE is None or LINE == "": continue
+			if LINE == "": continue
 			if LINE[:4] != "ATOM" and LINE[:6] != "HETATM": continue
 			RESIDS.append(int(LINE[21:26]))
 			COORDS.append([float(LINE[30:38]), float(LINE[38:46]), float(LINE[46:54])])
@@ -359,7 +359,7 @@ def ReadTrajectoryFiles(fname):
 	with f:
 		for LINE in f.readlines():
 			LINE = LINE.strip()
-			if LINE is None or LINE == "": continue
+			if LINE == "": continue
 			if not os.path.exists(LINE):
 				print("Can not find the trajectory file %s - quitting with error code 1" % (LINE))
 				sys.exit(1)
@@ -388,7 +388,7 @@ def ProcessBoostFiles(boostFileName, outFile):
 	with f:
 		for LINE in f.readlines():
 			LINE = LINE.strip()
-			if LINE is None or LINE == "": continue
+			if LINE == "": continue
 			if not os.path.exists(LINE):
 				print("Can not find the boosts file %s - quitting with error code 1" % (LINE))
 				sys.exit(1)
@@ -408,11 +408,18 @@ def ProcessBoostFiles(boostFileName, outFile):
 		with f:
 			for LINE in f.readlines():
 				LINE = LINE.strip()
-				if LINE is None or LINE == "" or LINE[0] == "#": continue
+				if LINE == "" or (len(LINE) > 0 and LINE[0] == "#"): continue
 				FIELDS = LINE.split()
-				v = float(FIELDS[6])
-				fo.write("%.5f %d %.5f\n" % (v / (0.001987 * 300.0), COUNTER, v))
-				COUNTER += 1
+				if len(FIELDS) < 7:
+					print("Warning: Line does not have enough fields (need at least 7), skipping: %s" % LINE)
+					continue
+				try:
+					v = float(FIELDS[6])
+					fo.write("%.5f %d %.5f\n" % (v / (0.001987 * 300.0), COUNTER, v))
+					COUNTER += 1
+				except ValueError:
+					print("Warning: Could not parse float from field 6, skipping: %s" % LINE)
+					continue
 	fo.close()
 
 	
@@ -482,8 +489,11 @@ if __name__ == "__main__":
 		fo = open("tmp.txt", "w")
 		for LINE in fi.readlines():
 			LINE = LINE.strip()
-			if LINE is None or LINE == "" or LINE[0] == "#": continue
+			if LINE == "" or (len(LINE) > 0 and LINE[0] == "#"): continue
 			FIELDS = LINE.split()
+			if len(FIELDS) <= index + 1:
+				print("Warning: Line does not have enough fields, skipping: %s" % LINE)
+				continue
 			fo.write("%s\n" % (FIELDS[index+1]))
 		fi.close()
 		fo.close()
@@ -492,38 +502,56 @@ if __name__ == "__main__":
 		# ######################################
 	
 		fi = open("tmp.txt", "r")
-		LINE = fi.readline()
-		LINE = LINE.strip()
-		MAX = float(LINE)
-		MIN = float(LINE)
-		fi.close()
-		fi = open("tmp.txt", "r")
+		MAX = None
+		MIN = None
 		for LINE in fi.readlines():
 			LINE = LINE.strip()
-			if LINE is None or LINE == "": continue
-			VALUE = float(LINE)
-			if MAX < VALUE: MAX = VALUE
-			if MIN > VALUE: MIN = VALUE
+			if LINE == "": continue
+			try:
+				VALUE = float(LINE)
+				if MAX is None:
+					MAX = VALUE
+					MIN = VALUE
+				else:
+					if MAX < VALUE: MAX = VALUE
+					if MIN > VALUE: MIN = VALUE
+			except ValueError:
+				continue
 		fi.close()
+		
+		if MAX is None or MIN is None:
+			print("Error: Could not extract valid distance values for residue %d - quitting with error code 1" % RESIDS[index])
+			sys.exit(1)
 	
 		# Run the 1D reweighting script
 		# #############################
 	
-		CMD = "./PyReweighting-1D.py -input tmp.txt -T 300 -cutoff 75 -Xdim %d %d -disc 1 -Emax 20 -job amdweight_CE -weight processed.gamd.txt" % (MIN, MAX)
+		script_path = os.path.join(os.path.dirname(__file__), "PyReweighting-1D.py")
+		CMD = "%s %s -input tmp.txt -T 300 -cutoff 75 -Xdim %d %d -disc 1 -Emax 20 -job amdweight_CE -weight processed.gamd.txt" % (sys.executable, script_path, MIN, MAX)
 		os.system(CMD)
 	
 		# Get the radius with the lowest pmf
 		# ##################################
 	
 		fi = open("pmf-c2-tmp.txt.xvg", "r")
+		D = None
 		for LINE in fi.readlines():
 			LINE = LINE.strip()
-			if LINE is None or LINE == "" or LINE[0] == "#" or LINE[0] == "@": continue
+			if LINE == "" or (len(LINE) > 0 and (LINE[0] == "#" or LINE[0] == "@")): continue
 			FIELDS = LINE.split()
-			D = float(FIELDS[0])
-			PMF = float(FIELDS[1])
-			if PMF == 0.0: break
+			if len(FIELDS) < 2:
+				continue
+			try:
+				D = float(FIELDS[0])
+				PMF = float(FIELDS[1])
+				if PMF == 0.0: break
+			except ValueError:
+				continue
 		fi.close()
+		
+		if D is None:
+			print("Error: Could not extract PMF data for residue %d - quitting with error code 1" % RESIDS[index])
+			sys.exit(1)
 		RADII.append(D)
 	
 		# Cleanup

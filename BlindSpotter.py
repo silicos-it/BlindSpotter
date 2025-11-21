@@ -212,12 +212,12 @@ def bootstrap_uncertainty(
     rng = np.random.default_rng(random_state)
     N = centers.shape[0]
     sols = []
-    base = intersect_spheres(centers, radii, use_scipy=use_scipy)["x"]
+    base = IntersectSpheres(centers, radii, use_scipy=use_scipy)["x"]
     for _ in range(n_boot):
         idx = rng.integers(0, N, size=N)
         cs = centers[idx]
         rs = radii[idx]
-        res = intersect_spheres(cs, rs, x0=base, use_scipy=use_scipy)
+        res = IntersectSpheres(cs, rs, x0=base, use_scipy=use_scipy)
         sols.append(res["x"])
     sols = np.array(sols)
     return {"mean": sols.mean(axis=0), "std": sols.std(axis=0, ddof=1), "samples": sols}
@@ -338,7 +338,6 @@ def ReadAtomCenters(fname):
 			if LINE[:4] != "ATOM" and LINE[:6] != "HETATM": continue
 			RESIDS.append(int(LINE[21:26]))
 			COORDS.append([float(LINE[30:38]), float(LINE[38:46]), float(LINE[46:54])])
-	f.close()
 	
 	return(RESIDS, COORDS)
 			
@@ -365,10 +364,9 @@ def ReadTrajectoryFiles(fname):
 				print("Can not find the trajectory file %s - quitting with error code 1" % (LINE))
 				sys.exit(1)
 			if not os.path.isfile(LINE):
-				print("The trajectory file %s is errorneous - quitting with error code 1" % (LINES))
+				print("The trajectory file %s is errorneous - quitting with error code 1" % (LINE))
 				sys.exit(1)
 			TRAJECTORIES.append(LINE)
-	f.close()
 	
 	return TRAJECTORIES
 			
@@ -398,7 +396,6 @@ def ProcessBoostFiles(boostFileName, outFile):
 				print("The boosts file %s is errorneous - quitting with error code 1" % (LINE))
 				sys.exit(1)
 			BOOSTFILES.append(LINE)
-	f.close()
 	
 	COUNTER = 1
 	fo = open("%s" % (outFile), "w")
@@ -416,7 +413,6 @@ def ProcessBoostFiles(boostFileName, outFile):
 				v = float(FIELDS[6])
 				fo.write("%.5f %d %.5f\n" % (v / (0.001987 * 300.0), COUNTER, v))
 				COUNTER += 1
-		f.close()
 	fo.close()
 
 	

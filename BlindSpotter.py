@@ -267,7 +267,14 @@ def ParseCommandline():
 						type=str,			
 						help="TEXT file that contains the full path of all trajectory files that should be processed",
 						required=True)
-					
+
+	parser.add_argument("-o",
+						"--output",
+						type=str,			
+						help="PDB file name of the hotspot center",
+						required=False,
+						default="hotspot.pdb")
+
 	args = parser.parse_args()
 	
 	# --version
@@ -359,7 +366,7 @@ def ReadTrajectoryFiles(fname):
 	with f:
 		for LINE in f.readlines():
 			LINE = LINE.strip()
-			if LINE == "": continue
+			if LINE == "" or LINE[0] == "#": continue
 			if not os.path.exists(LINE):
 				print("Can not find the trajectory file %s - quitting with error code 1" % (LINE))
 				sys.exit(1)
@@ -388,7 +395,7 @@ def ProcessBoostFiles(boostFileName, outFile):
 	with f:
 		for LINE in f.readlines():
 			LINE = LINE.strip()
-			if LINE == "": continue
+			if LINE == "" or LINE[0] == "#": continue
 			if not os.path.exists(LINE):
 				print("Can not find the boosts file %s - quitting with error code 1" % (LINE))
 				sys.exit(1)
@@ -582,7 +589,7 @@ if __name__ == "__main__":
 	print("RMS residual :", result["rms"])
 	print("DoF          :", result["dof"])
 
-	fo = open("hotspot.pdb", "w")
+	fo = open(args.output, "w")
 	fo.write("ATOM      1  O   POC     1    %8.3f%8.3f%8.3f  1.00  0.00\n" % (x[0], x[1], x[2]))
 	fo.close()
 	

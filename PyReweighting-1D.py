@@ -285,9 +285,8 @@ def weightparse(rows, args):
         dV = np.zeros(rows)
     else:
         print ("ERROR JOBTYPE"+ args.job+ " NOT RECOGNIZED")
-        del data
-        del weights
-        del dV
+        weights = None
+        dV = None
     return weights,dV
 
 def reweight_CE(data,hist_min,binsX,discX,dV,T,fit):
@@ -358,9 +357,6 @@ def reweight_CE(data,hist_min,binsX,discX,dV,T,fit):
             dV_avg[j]=np.average(atemp)
             dV_std[j]=np.std(atemp)
 
-##	  if np.absolute(dV_avg[j]-dV_avg_all)>diff_tol_avg or np.absolute(dV_std[j]-dV_std_all)>diff_tol_std :
-##	     dV_avg[j]=0
-##	     dV_std[j]=0
 
           dV_avg2[j]=np.average(atemp2)
           dV_avg3[j]=np.average(atemp3)
@@ -385,7 +381,7 @@ def reweight_dV(data,hist_min,binsX,discX,dV,T):
     nbins = len(hist)
 
     binf = np.zeros(nf) # array for storing assigned bin of each frame
-    nA = np.zeros(nbins,dtype=np.int) # nA is equivalent to hist here
+    nA = np.zeros(nbins,dtype=int) # nA is equivalent to hist here
     dV_avg = np.zeros(nbins)
     dV_std = np.zeros(nbins)
     dV_anharm = np.zeros(nbins)
@@ -465,7 +461,7 @@ def output_pmf(pmffile,hist,binsX):
     for j in range(len(hist[:])):
         strpmf=str(binsX[j]) + ' \t' + str(hist[j]) + '\n'
         fpmf.write(strpmf)
-    fpmf.closed
+    fpmf.close()
     return fpmf
 
 def output_dV(pmffile,dV):
@@ -475,7 +471,7 @@ def output_dV(pmffile,dV):
     for k in range(len(hist_dV)):
         strpmf=strpmf + str(bin_dV[k]) + ' \t' + str(hist_dV[k]) + ' \n'
     fpmf.write(strpmf)
-    fpmf.closed
+    fpmf.close()
     return fpmf
 
 def output_dV_anharm(pmffile,binsX,dV_anharm):
@@ -485,7 +481,7 @@ def output_dV_anharm(pmffile,binsX,dV_anharm):
     for j in range(len(dV_anharm[:])):
         strpmf=str(binsX[j]) + ' \t' + str(dV_anharm[j]) + '\n'
         fpmf.write(strpmf)
-    fpmf.closed
+    fpmf.close()
     return fpmf
 
 def output_dV_stat(pmffile,binsX,dV_avg,dV_std,dV_anharm):
@@ -495,7 +491,7 @@ def output_dV_stat(pmffile,binsX,dV_avg,dV_std,dV_anharm):
     for j in range(len(dV_avg[:])):
         strpmf=str(binsX[j]) + ' \t' + str(dV_avg[j]) + ' \t' + str(dV_std[j]) + ' \t' + str(dV_anharm[j]) + '\n'
         fpmf.write(strpmf)
-    fpmf.closed
+    fpmf.close()
     return fpmf
 
 def output_dV_mat(pmffile,binsX,hist,dV_avg,dV_std,dV_anharm,dV_mat):
@@ -508,14 +504,8 @@ def output_dV_mat(pmffile,binsX,hist,dV_avg,dV_std,dV_anharm,dV_mat):
         strpmf=strpmf + ' \t' + str(dV_mat[j][1:nf_j+1])
         strpmf=strpmf + '\n'
         fpmf.write(strpmf)
-    fpmf.closed
+    fpmf.close()
     return fpmf
-
-def accel_amd_window(c12,itb,ite):
-    avg = np.average(dV)
-    std = np.std(dV)
-    accel = np.exp(c12)
-    return accel
 
 def accel_amd(dV,T):
     avg = np.average(dV)

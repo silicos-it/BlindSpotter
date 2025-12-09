@@ -3,6 +3,7 @@
 import argparse
 import sys
 import os
+import random
 import numpy as np
 
 try:
@@ -230,6 +231,7 @@ def bootstrap_uncertainty(
 def ParseCommandline():
 
 	parser = argparse.ArgumentParser()
+
 	parser.add_argument("-v",
 					"--version",
 					action="store_true", 
@@ -274,6 +276,13 @@ def ParseCommandline():
 						help="PDB file name of the hotspot center",
 						required=False,
 						default="hotspot.pdb")
+
+	parser.add_argument("-f",
+						"--fraction",
+						type=float,			
+						help="defines the fraction of centers that should be randomly selected",
+						required=False,
+						default=1.0)
 
 	args = parser.parse_args()
 	
@@ -327,7 +336,7 @@ def ParseCommandline():
 # Read the atom centers
 # #####################
 
-def ReadAtomCenters(fname):
+def ReadAtomCenters(fname, fraction):
 
 	RESIDS = []
 	COORDS = []
@@ -346,7 +355,10 @@ def ReadAtomCenters(fname):
 			RESIDS.append(int(LINE[21:26]))
 			COORDS.append([float(LINE[30:38]), float(LINE[38:46]), float(LINE[46:54])])
 	
-	return(RESIDS, COORDS)
+	indices = list(range(0, len(COORDS)))
+	selection = random.sample(indices, int(fraction * len(indices)))
+
+	return ([RESIDS[i] for i in selection], [COORDS[i] for i in selection])
 			
 	
 
@@ -466,7 +478,7 @@ if __name__ == "__main__":
 	# Read centers file
 	# #################
 	
-	RESIDS, COORDS = ReadAtomCenters(args.centers)
+	RESIDS, COORDS = ReadAtomCenters(args.centers, args.fraction)
 
 
 	# Read the trajectory files

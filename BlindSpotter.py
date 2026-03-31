@@ -552,7 +552,7 @@ if __name__ == "__main__":
 		# #############################
 	
 		script_path = os.path.join(os.path.dirname(__file__), "PyReweighting-1D.py")
-		CMD = "%s %s -input tmp.txt -T 300 -cutoff 75 -Xdim %d %d -disc 1 -Emax 20 -job amdweight_CE -weight processed.gamd.txt" % (sys.executable, script_path, MIN, MAX)
+		CMD = "%s %s -input tmp.txt -T 300 -cutoff %d -Xdim %d %d -disc 1 -Emax 20 -job amdweight_CE -weight processed.gamd.txt" % (sys.executable, args.cutoff, script_path, MIN, MAX)
 		os.system(CMD)
 	
 		# Get the radius with the lowest pmf

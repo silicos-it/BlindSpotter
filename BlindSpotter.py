@@ -283,6 +283,12 @@ def ParseCommandline():
 						help="defines the fraction of centers that should be randomly selected",
 						required=False,
 						default=1.0)
+				
+	parser.add_argument("--cutoff",
+						type=int,			
+						help="Specifies the histogram cutoff number that is used in the PyReweighting script",
+						required=False,
+						default=10)
 
 	args = parser.parse_args()
 	

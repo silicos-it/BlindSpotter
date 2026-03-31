@@ -352,7 +352,7 @@ def ReadAtomCenters(fname, fraction):
 			LINE = LINE.strip()
 			if LINE == "": continue
 			if LINE[:4] != "ATOM" and LINE[:6] != "HETATM": continue
-			RESIDS.append(int(LINE[21:26]))
+			RESIDS.append(int(LINE[22:26]))
 			COORDS.append([float(LINE[30:38]), float(LINE[38:46]), float(LINE[46:54])])
 	
 	indices = list(range(0, len(COORDS)))

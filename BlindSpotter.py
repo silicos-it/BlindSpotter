@@ -289,6 +289,12 @@ def ParseCommandline():
 						help="Specifies the histogram cutoff number that is used in the PyReweighting script",
 						required=False,
 						default=10)
+				
+	parser.add_argument("--boostingType",
+						choices=['single', 'dual'],			
+						help="Specifies whether a single, or double/triple boosting was applied",
+						required=False,
+						default='single')
 
 	args = parser.parse_args()
 	
@@ -400,7 +406,7 @@ def ReadTrajectoryFiles(fname):
 # Process the boost files
 # #######################
 
-def ProcessBoostFiles(boostFileName, outFile):
+def ProcessBoostFiles(boostFileName, boostingType, outFile):
 
 	BOOSTFILES = []	
 	
@@ -423,6 +429,9 @@ def ProcessBoostFiles(boostFileName, outFile):
 			BOOSTFILES.append(LINE)
 	
 	COUNTER = 1
+	if boostingType == "single": MIN_FIELDS = 7
+	if boostingType == "double": MIN_FIELDS = 8
+
 	fo = open("%s" % (outFile), "w")
 	for FN in BOOSTFILES:
 		try:
@@ -435,16 +444,26 @@ def ProcessBoostFiles(boostFileName, outFile):
 				LINE = LINE.strip()
 				if LINE == "" or (len(LINE) > 0 and LINE[0] == "#"): continue
 				FIELDS = LINE.split()
-				if len(FIELDS) < 7:
-					print("Warning: Line does not have enough fields (need at least 7), skipping: %s" % LINE)
+				if len(FIELDS) < MIN_FIELDS:
+					print("Warning: Line does not have enough fields (need at least %d), skipping: %s" % (MIN_FIELDS, LINE))
 					continue
-				try:
-					v = float(FIELDS[6])
-					fo.write("%.5f %d %.5f\n" % (v / (0.001987 * 300.0), COUNTER, v))
-					COUNTER += 1
-				except ValueError:
-					print("Warning: Could not parse float from field 6, skipping: %s" % LINE)
-					continue
+				if MIN_FIELDS == 7:
+					try:
+						v = float(FIELDS[6])
+						fo.write("%.5f %d %.5f\n" % (v / (0.001987 * 300.0), COUNTER, v))
+						COUNTER += 1
+					except ValueError:
+						print("Warning: Could not parse float from column 7, skipping: %s" % LINE)
+						continue
+				if MIN_FIELDS == 8:
+					try:
+						v = float(FIELDS[6]) + float(FIELDS[7])
+						fo.write("%.5f %d %.5f\n" % (v / (0.001987 * 300.0), COUNTER, v))
+						COUNTER += 1
+					except ValueError:
+						print("Warning: Could not parse floats from column 7 or 8, skipping: %s" % LINE)
+						continue
+
 	fo.close()
 
 	
@@ -502,7 +521,7 @@ if __name__ == "__main__":
 	# Process the boost files
 	# #######################
 	
-	ProcessBoostFiles(args.boosts, "processed.gamd.txt")
+	ProcessBoostFiles(args.boosts, args.boostingType, "processed.gamd.txt")
 	
 	
 	# Loop over all centers to calculate PMFs

@@ -292,7 +292,7 @@ def ParseCommandline():
 				
 	parser.add_argument("--boostingType",
 						choices=['single', 'dual'],			
-						help="Specifies whether a single, or double/triple boosting was applied",
+						help="Specifies whether a single, or dual/triple boosting was applied",
 						required=False,
 						default='single')
 
@@ -430,7 +430,7 @@ def ProcessBoostFiles(boostFileName, boostingType, outFile):
 	
 	COUNTER = 1
 	if boostingType == "single": MIN_FIELDS = 7
-	if boostingType == "double": MIN_FIELDS = 8
+	if boostingType == "dual": MIN_FIELDS = 8
 
 	fo = open("%s" % (outFile), "w")
 	for FN in BOOSTFILES:

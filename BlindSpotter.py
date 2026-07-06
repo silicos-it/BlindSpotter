@@ -225,6 +225,216 @@ def bootstrap_uncertainty(
 
 
 
+# ExtractRadii function
+# #####################
+
+def ExtractRadii(pmf_file: str, pmf_cutoff: float, max_minima: int) -> list[float]:
+    """
+    Parse a two-column PMF .xvg file and return the distances (radii) at the
+    local minima whose PMF lies within pmf_cutoff of the global minimum.
+
+    The global minimum is always returned first. The remaining local minima are
+    sorted by PMF depth (deepest first) and the result is truncated to at most
+    max_minima entries. This lets a single residue contribute several candidate
+    radii, one per binding mode, instead of only the single deepest distance.
+    """
+    dists = []
+    pmfs = []
+
+    try:
+        fi = open(pmf_file, "r")
+    except OSError:
+        return []
+
+    with fi:
+        for LINE in fi.readlines():
+            LINE = LINE.strip()
+            if LINE == "" or (len(LINE) > 0 and (LINE[0] == "#" or LINE[0] == "@")): continue
+            FIELDS = LINE.split()
+            if len(FIELDS) < 2:
+                continue
+            try:
+                d = float(FIELDS[0])
+                p = float(FIELDS[1])
+            except ValueError:
+                continue
+            dists.append(d)
+            pmfs.append(p)
+
+    if len(dists) == 0:
+        return []
+
+    dists = np.asarray(dists, dtype=float)
+    pmfs = np.asarray(pmfs, dtype=float)
+    n = len(pmfs)
+
+    gmin = int(np.argmin(pmfs))
+    baseline = float(pmfs[gmin])
+
+    # (pmf, distance) for the global minimum plus every qualifying local minimum
+    minima = [(float(pmfs[gmin]), float(dists[gmin]))]
+    for i in range(n):
+        if i == gmin:
+            continue
+        left = pmfs[i - 1] if i > 0 else np.inf
+        right = pmfs[i + 1] if i < n - 1 else np.inf
+        if pmfs[i] <= left and pmfs[i] <= right and (pmfs[i] - baseline) <= pmf_cutoff:
+            minima.append((float(pmfs[i]), float(dists[i])))
+
+    minima.sort(key=lambda t: t[0])
+
+    radii: list[float] = []
+    for _, d in minima:
+        if all(abs(d - r) > 1e-9 for r in radii):
+            radii.append(d)
+        if len(radii) >= max_minima:
+            break
+
+    return radii
+
+
+
+# FindHotspots function
+# #####################
+
+def FindHotspots(
+    centers: np.ndarray,
+    radii_per_res: list[list[float]],
+    tol: float = 1.0,
+    min_inliers: int | None = None,
+    n_iter: int = 2000,
+    k: int | None = None,
+    random_state: int | None = 0,
+) -> list[dict]:
+    """
+    Detect one or more sphere-intersection hotspots via a RANSAC scheme.
+
+    Each residue provides a center and a list of candidate radii (PMF minima).
+    Rather than forcing all spheres into a single least-squares fit, this
+    repeatedly samples minimal 4-sphere subsets, solves for a candidate point,
+    and counts how many residues are consistent with that point (an inlier is a
+    residue having at least one candidate radius r with |||x - c|| - r| <= tol).
+
+    High-consensus hypotheses are clustered spatially and de-duplicated by inlier
+    overlap, then each surviving hotspot is refined with IntersectSpheres on its
+    inliers. Returns a list of hotspot dicts sorted by descending inlier count.
+
+    Parameters
+    ----------
+    centers : (N,3) array
+        Residue C-alpha positions.
+    radii_per_res : list of lists
+        radii_per_res[i] holds the candidate radii for residue i.
+    tol : float
+        Inlier distance tolerance (Angstrom).
+    min_inliers : int, optional
+        Minimum residues required to accept a hotspot. Defaults to
+        max(4, 10% of residues).
+    n_iter : int
+        Number of RANSAC iterations.
+    k : int, optional
+        If set (>0), keep only the top-k hotspots by consensus.
+    random_state : int, optional
+        Seed for reproducible sampling.
+    """
+    centers = np.asarray(centers, dtype=float)
+    n_res = centers.shape[0]
+
+    if min_inliers is None:
+        min_inliers = max(4, int(0.1 * n_res))
+    min_inliers = max(4, int(min_inliers))
+
+    rng = random.Random(random_state)
+
+    valid_res = [i for i in range(n_res) if len(radii_per_res[i]) > 0]
+    if len(valid_res) < 4:
+        return []
+
+    def best_residual(i: int, x: np.ndarray) -> float | None:
+        """Smallest |||x - c_i|| - r| over residue i's candidate radii within tol."""
+        dist = float(np.linalg.norm(x - centers[i]))
+        best = None
+        for r in radii_per_res[i]:
+            resid = abs(dist - r)
+            if resid <= tol and (best is None or resid < best):
+                best = resid
+        return best
+
+    def inlier_set(x: np.ndarray) -> set[int]:
+        return {i for i in valid_res if best_residual(i, x) is not None}
+
+    hypotheses = []  # (x, inlier_set)
+    for _ in range(n_iter):
+        sample = rng.sample(valid_res, 4)
+        sub_centers = np.array([centers[i] for i in sample])
+        sub_radii = np.array([rng.choice(radii_per_res[i]) for i in sample])
+        try:
+            res = IntersectSpheres(sub_centers, sub_radii)
+        except Exception:
+            continue
+        x = res["x"]
+        if not np.all(np.isfinite(x)):
+            continue
+        inliers = inlier_set(x)
+        if len(inliers) >= min_inliers:
+            hypotheses.append((x, inliers))
+
+    if len(hypotheses) == 0:
+        return []
+
+    hypotheses.sort(key=lambda h: len(h[1]), reverse=True)
+
+    # Greedy de-duplication: drop hypotheses that are spatially close to, or share
+    # most of their inliers with, a stronger hypothesis already kept.
+    selected = []
+    for x, inliers in hypotheses:
+        keep = True
+        for sx, sinliers in selected:
+            overlap = len(inliers & sinliers) / max(1, min(len(inliers), len(sinliers)))
+            if float(np.linalg.norm(x - sx)) <= 2.0 * tol or overlap > 0.5:
+                keep = False
+                break
+        if keep:
+            selected.append((x, inliers))
+
+    hotspots = []
+    for x, inliers in selected:
+        inlier_list = sorted(inliers)
+        if len(inlier_list) < 4:
+            continue
+        ref_centers = []
+        ref_radii = []
+        for i in inlier_list:
+            dist = float(np.linalg.norm(x - centers[i]))
+            best_r = None
+            best_resid = None
+            for r in radii_per_res[i]:
+                resid = abs(dist - r)
+                if best_resid is None or resid < best_resid:
+                    best_resid = resid
+                    best_r = r
+            ref_centers.append(centers[i])
+            ref_radii.append(best_r)
+        result = IntersectSpheres(np.array(ref_centers), np.array(ref_radii), x0=x)
+        hotspots.append({
+            "x": result["x"],
+            "sigma": result["sigma"],
+            "rms": result["rms"],
+            "n_inliers": len(inlier_list),
+            "converged": result["converged"],
+        })
+
+    hotspots.sort(key=lambda h: h["n_inliers"], reverse=True)
+
+    if k is not None and k > 0:
+        if len(hotspots) < k:
+            print("Warning: requested %d hotspots but only %d were found" % (k, len(hotspots)))
+        hotspots = hotspots[:k]
+
+    return hotspots
+
+
+
 # Parse commannd-line arguments
 # #############################
 
@@ -296,6 +506,36 @@ def ParseCommandline():
 						required=False,
 						default='single')
 
+	parser.add_argument("--hotspots",
+						type=int,			
+						help="Number of hotspots to report. 0 means auto-detect (default)",
+						required=False,
+						default=0)
+
+	parser.add_argument("--tolerance",
+						type=float,			
+						help="Inlier distance tolerance (Angstrom) used when grouping spheres into a common intersection",
+						required=False,
+						default=1.0)
+
+	parser.add_argument("--pmfCutoff",
+						type=float,			
+						help="PMF depth window (kcal/mol) above the global minimum for accepting secondary PMF minima as candidate radii",
+						required=False,
+						default=1.0)
+
+	parser.add_argument("--maxMinima",
+						type=int,			
+						help="Maximum number of candidate radii (PMF minima) extracted per residue",
+						required=False,
+						default=3)
+
+	parser.add_argument("--minInliers",
+						type=int,			
+						help="Minimum number of residues that must support a hotspot. 0 means automatic (max(4, 10%% of residues))",
+						required=False,
+						default=0)
+
 	args = parser.parse_args()
 	
 	# --version
@@ -338,6 +578,31 @@ def ParseCommandline():
 		sys.exit(1)
 	if not os.path.isfile(args.parm):
 		print("The parm file %s is errorneous - quitting with error code 1" % (args.parm))
+		sys.exit(1)
+	
+	# --hotspots
+	if args.hotspots < 0:
+		print("The number of hotspots should be larger or equal than 0 - quitting with error code 1")
+		sys.exit(1)
+	
+	# --tolerance
+	if args.tolerance <= 0.0:
+		print("The tolerance should be larger than 0 - quitting with error code 1")
+		sys.exit(1)
+	
+	# --pmfCutoff
+	if args.pmfCutoff < 0.0:
+		print("The pmfCutoff should be larger or equal than 0 - quitting with error code 1")
+		sys.exit(1)
+	
+	# --maxMinima
+	if args.maxMinima < 1:
+		print("The maxMinima should be larger or equal than 1 - quitting with error code 1")
+		sys.exit(1)
+	
+	# --minInliers
+	if args.minInliers < 0:
+		print("The minInliers should be larger or equal than 0 - quitting with error code 1")
 		sys.exit(1)
 	
 	# Return
@@ -492,7 +757,7 @@ def CalculateDistances(trajectoryFiles, distancesOutFile, parmFile, resids, liga
 
 if __name__ == "__main__":
 
-	RADII = []
+	RADII_PER_RES = []
 
 	# Parse command-line
 	# ##################
@@ -574,29 +839,14 @@ if __name__ == "__main__":
 		CMD = "%s %s -input tmp.txt -T 300 -cutoff %d -Xdim %d %d -disc 1 -Emax 20 -job amdweight_CE -weight processed.gamd.txt" % (sys.executable, script_path, args.cutoff, MIN, MAX)
 		os.system(CMD)
 	
-		# Get the radius with the lowest pmf
-		# ##################################
+		# Extract candidate radii from the PMF minima
+		# ###########################################
 	
-		fi = open("pmf-c2-tmp.txt.xvg", "r")
-		D = None
-		for LINE in fi.readlines():
-			LINE = LINE.strip()
-			if LINE == "" or (len(LINE) > 0 and (LINE[0] == "#" or LINE[0] == "@")): continue
-			FIELDS = LINE.split()
-			if len(FIELDS) < 2:
-				continue
-			try:
-				D = float(FIELDS[0])
-				PMF = float(FIELDS[1])
-				if PMF == 0.0: break
-			except ValueError:
-				continue
-		fi.close()
-		
-		if D is None:
+		radii = ExtractRadii("pmf-c2-tmp.txt.xvg", args.pmfCutoff, args.maxMinima)
+		if len(radii) == 0:
 			print("Error: Could not extract PMF data for residue %d - quitting with error code 1" % RESIDS[index])
 			sys.exit(1)
-		RADII.append(D)
+		RADII_PER_RES.append(radii)
 	
 		# Cleanup
 		# #######
@@ -609,24 +859,40 @@ if __name__ == "__main__":
 		if os.path.exists("pmf-c3-tmp.txt.xvg"): os.remove("pmf-c3-tmp.txt.xvg")
 
 
-	# Minimize
-	# ########
+	# Detect hotspots
+	# ###############
 
 	centers = np.asarray(COORDS)
-	radii = np.asarray(RADII)
-    
-	result = IntersectSpheres(centers, radii)
-	x = result["x"]
-	sigma = result["sigma"]
 
-	print("Method       :", result["method"])
-	print("Converged    :", result["converged"])
-	print("Best-fit x   : [%.6f, %.6f, %.6f]" % tuple(x))
-	print("1-sigma (xyz): [%.6e, %.6e, %.6e]" % tuple(sigma))
-	print("RMS residual :", result["rms"])
-	print("DoF          :", result["dof"])
+	minInliers = args.minInliers if args.minInliers > 0 else None
+	k = args.hotspots if args.hotspots > 0 else None
+
+	hotspots = FindHotspots(centers, RADII_PER_RES, tol=args.tolerance, min_inliers=minInliers, k=k)
+
+	if len(hotspots) == 0:
+		print("Error: No hotspots could be detected - try increasing --tolerance or --pmfCutoff - quitting with error code 1")
+		sys.exit(1)
+
+	print("Detected %d hotspot(s)" % len(hotspots))
+
+	max_inliers = max(h["n_inliers"] for h in hotspots)
 
 	fo = open(args.output, "w")
-	fo.write("ATOM      1  O   POC     1    %8.3f%8.3f%8.3f  1.00  0.00\n" % (x[0], x[1], x[2]))
+	for i, h in enumerate(hotspots):
+		x = h["x"]
+		sigma = h["sigma"]
+		occ = h["n_inliers"] / max_inliers
+		bfac = h["rms"]
+
+		print("")
+		print("Hotspot %d" % (i + 1))
+		print("  Coordinates  : [%.6f, %.6f, %.6f]" % tuple(x))
+		print("  1-sigma (xyz): [%.6e, %.6e, %.6e]" % tuple(sigma))
+		print("  RMS residual : %.6f" % h["rms"])
+		print("  Inliers      : %d" % h["n_inliers"])
+		print("  Converged    : %s" % h["converged"])
+
+		fo.write("ATOM  %5d  O   POC %5d    %8.3f%8.3f%8.3f%6.2f%6.2f\n" % (
+			i + 1, i + 1, x[0], x[1], x[2], occ, bfac))
 	fo.close()
 	

@@ -12,6 +12,8 @@ BlindSpotter is a Python tool designed to identify preferred binding hotspots of
 - Using the LiGaMD boost potential applied on ligand–protein interactions, the probability distribution along each distance axis is reweighted.
 - From these distributions, local minima of the potential of mean force (PMF) are identified. Each minimum corresponds to a preferred ligand distance relative to that residue.
 
+
+
 #### 2. Sphere representation of residue–ligand preferences
 
 - Each residue can define one or more spheres in 3D space:
@@ -20,6 +22,8 @@ BlindSpotter is a Python tool designed to identify preferred binding hotspots of
 - By default, the global PMF minimum is used. Secondary minima within `--pmfCutoff` kcal/mol of the deepest minimum are also accepted as candidate radii (up to `--maxMinima` per residue). This captures multi-modal distance preferences when the ligand samples more than one binding mode.
 - For example, if ASP-145 shows the lowest PMF at 25 Å, the ligand’s most favorable position lies somewhere on the surface of a sphere with center at ASP-145 and radius 25 Å. If a second PMF minimum appears at 40 Å within the cutoff, a second candidate sphere is added for that residue.
 - This procedure is repeated for all selected residues.
+
+
 
 #### 3. Geometric intersection to localize hotspot(s)
 
@@ -45,6 +49,36 @@ The output PDB (default: `hotspot.pdb`) contains one `ATOM` record per detected 
 
 A per-hotspot summary (coordinates, uncertainty, RMS, inlier count) is printed to stdout.
 
+#### 5. PMF quality filtering (optional)
+
+Before hotspot detection, residues can be filtered to keep only those with reliable PMF profiles. This is controlled by `--pmfFilter` (default `none`, preserving backward-compatible behavior).
+
+**Criterion A — well-defined minimum** (`quality`):
+
+- **Basin width**: the PMF must rise above `--basinCutoff` kcal/mol of the minimum within `--maxBasinWidth` Å (rejects flat profiles).
+- **Barrier height**: the PMF must rise at least `--minBarrier` kcal/mol above the global minimum before the next competing minimum.
+- **Competing minima**: at most `--maxCompetingMinima` additional local minima may lie within `--pmfCutoff` of the global minimum.
+
+**Criterion B — neighbor PMF similarity** (`neighbors`):
+
+- Residues near a binding site tend to share similar ligand-distance preferences.
+- Each residue's PMF is compared (Pearson correlation) to the median PMF of its spatial neighbors (C-alpha distance `<= --neighborDist`, or `--neighborK` nearest neighbors via `--neighborMode`).
+- A residue passes if correlation `>= --minNeighborCorr` and it has at least `--minNeighbors` spatial neighbors.
+
+**Filter modes:**
+
+
+| `--pmfFilter` | Keep residue if                                                      |
+| ------------- | -------------------------------------------------------------------- |
+| `none`        | always (default)                                                     |
+| `quality`     | passes well-defined minimum                                          |
+| `neighbors`   | passes neighbor similarity                                           |
+| `both`        | passes quality **and** (neighbors or insufficient neighbors to test) |
+| `either`      | passes quality **or** neighbor similarity                            |
+
+
+A summary of kept/rejected residues is printed to stdout. The run exits with an error if fewer than 4 residues remain.
+
 ## Usage
 
 ```bash
@@ -57,21 +91,49 @@ python BlindSpotter.py \
   -o hotspot.pdb
 ```
 
+
+
 ### Multi-hotspot options
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--hotspots` | `0` | Number of hotspots to report. `0` = auto-detect. |
-| `--tolerance` | `1.0` | Inlier distance tolerance (Å) when grouping spheres into a common intersection. |
-| `--pmfCutoff` | `1.0` | PMF depth window (kcal/mol) above the global minimum for accepting secondary minima as candidate radii. |
-| `--maxMinima` | `3` | Maximum number of candidate radii (PMF minima) extracted per residue. |
-| `--minInliers` | `0` | Minimum residues required to accept a hotspot. `0` = automatic (`max(4, 10% of residues)`). |
+
+| Option         | Default | Description                                                                                             |
+| -------------- | ------- | ------------------------------------------------------------------------------------------------------- |
+| `--hotspots`   | `0`     | Number of hotspots to report. `0` = auto-detect.                                                        |
+| `--tolerance`  | `1.0`   | Inlier distance tolerance (Å) when grouping spheres into a common intersection.                         |
+| `--pmfCutoff`  | `1.0`   | PMF depth window (kcal/mol) above the global minimum for accepting secondary minima as candidate radii. |
+| `--maxMinima`  | `3`     | Maximum number of candidate radii (PMF minima) extracted per residue.                                   |
+| `--minInliers` | `0`     | Minimum residues required to accept a hotspot. `0` = automatic (`max(4, 10% of residues)`).             |
+
+
+
+
+### PMF quality filtering options
+
+
+| Option                 | Default    | Description                                                    |
+| ---------------------- | ---------- | -------------------------------------------------------------- |
+| `--pmfFilter`          | `none`     | Filter mode: `none`, `quality`, `neighbors`, `both`, `either`. |
+| `--maxBasinWidth`      | `6.0`      | Max basin width (Å) at `basinCutoff` above the PMF minimum.    |
+| `--basinCutoff`        | `1.0`      | Energy above minimum (kcal/mol) used to measure basin width.   |
+| `--minBarrier`         | `1.0`      | Min barrier (kcal/mol) to the next competing PMF minimum.      |
+| `--maxCompetingMinima` | `1`        | Max competing minima within `pmfCutoff` of the global minimum. |
+| `--neighborMode`       | `distance` | Neighbor definition: `distance` or `knn`.                      |
+| `--neighborDist`       | `8.0`      | C-alpha distance cutoff (Å) for `distance` mode.               |
+| `--neighborK`          | `5`        | Number of nearest neighbors for `knn` mode.                    |
+| `--minNeighborCorr`    | `0.6`      | Min Pearson r vs median neighbor PMF profile.                  |
+| `--minNeighbors`       | `2`        | Min spatial neighbors required to apply the neighbor test.     |
+
+
+
 
 ### Other options
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `-f` / `--fraction` | `1.0` | Fraction of centers to randomly select. |
-| `-o` / `--output` | `hotspot.pdb` | Output PDB file name. |
-| `--cutoff` | `10` | Histogram cutoff used by the PyReweighting script. |
-| `--boostingType` | `single` | Boosting type: `single` or `dual`. |
+
+| Option              | Default       | Description                                        |
+| ------------------- | ------------- | -------------------------------------------------- |
+| `-f` / `--fraction` | `1.0`         | Fraction of centers to randomly select.            |
+| `-o` / `--output`   | `hotspot.pdb` | Output PDB file name.                              |
+| `--cutoff`          | `10`          | Histogram cutoff used by the PyReweighting script. |
+| `--boostingType`    | `single`      | Boosting type: `single` or `dual`.                 |
+
+

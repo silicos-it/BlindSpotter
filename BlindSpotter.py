@@ -225,26 +225,18 @@ def bootstrap_uncertainty(
 
 
 
-# ExtractRadii function
-# #####################
+# ParsePMF function
+# #################
 
-def ExtractRadii(pmf_file: str, pmf_cutoff: float, max_minima: int) -> list[float]:
-    """
-    Parse a two-column PMF .xvg file and return the distances (radii) at the
-    local minima whose PMF lies within pmf_cutoff of the global minimum.
-
-    The global minimum is always returned first. The remaining local minima are
-    sorted by PMF depth (deepest first) and the result is truncated to at most
-    max_minima entries. This lets a single residue contribute several candidate
-    radii, one per binding mode, instead of only the single deepest distance.
-    """
+def ParsePMF(pmf_file: str) -> tuple[np.ndarray, np.ndarray] | None:
+    """Read a two-column PMF .xvg file and return (dists, pmfs) arrays."""
     dists = []
     pmfs = []
 
     try:
         fi = open(pmf_file, "r")
     except OSError:
-        return []
+        return None
 
     with fi:
         for LINE in fi.readlines():
@@ -262,16 +254,36 @@ def ExtractRadii(pmf_file: str, pmf_cutoff: float, max_minima: int) -> list[floa
             pmfs.append(p)
 
     if len(dists) == 0:
-        return []
+        return None
 
-    dists = np.asarray(dists, dtype=float)
-    pmfs = np.asarray(pmfs, dtype=float)
+    return np.asarray(dists, dtype=float), np.asarray(pmfs, dtype=float)
+
+
+
+# ExtractRadii function
+# #####################
+
+def ExtractRadii(
+    dists: np.ndarray,
+    pmfs: np.ndarray,
+    pmf_cutoff: float,
+    max_minima: int,
+) -> list[float]:
+    """
+    Return the distances (radii) at local minima whose PMF lies within
+    pmf_cutoff of the global minimum.
+
+    The global minimum is always returned first. The remaining local minima are
+    sorted by PMF depth (deepest first) and the result is truncated to at most
+    max_minima entries.
+    """
     n = len(pmfs)
+    if n == 0:
+        return []
 
     gmin = int(np.argmin(pmfs))
     baseline = float(pmfs[gmin])
 
-    # (pmf, distance) for the global minimum plus every qualifying local minimum
     minima = [(float(pmfs[gmin]), float(dists[gmin]))]
     for i in range(n):
         if i == gmin:
@@ -291,6 +303,291 @@ def ExtractRadii(pmf_file: str, pmf_cutoff: float, max_minima: int) -> list[floa
             break
 
     return radii
+
+
+
+def _local_minima_indices(pmfs: np.ndarray) -> list[int]:
+    """Return indices of local minima in a 1D PMF profile."""
+    n = len(pmfs)
+    indices = []
+    for i in range(n):
+        left = pmfs[i - 1] if i > 0 else np.inf
+        right = pmfs[i + 1] if i < n - 1 else np.inf
+        if pmfs[i] <= left and pmfs[i] <= right:
+            indices.append(i)
+    return indices
+
+
+
+# ScorePMFWellDefined function
+# ############################
+
+def ScorePMFWellDefined(
+    dists: np.ndarray,
+    pmfs: np.ndarray,
+    pmf_cutoff: float,
+    basin_cutoff: float,
+    max_basin_width: float,
+    min_barrier: float,
+    max_competing_minima: int,
+) -> dict:
+    """
+    Score whether a PMF profile has a well-defined global minimum.
+
+    Returns a dict with passes (bool), metrics, and failure reasons.
+    """
+    gmin = int(np.argmin(pmfs))
+    baseline = float(pmfs[gmin])
+    threshold = baseline + basin_cutoff
+
+    # Basin width: span where PMF stays within basin_cutoff of the minimum
+    left = gmin
+    while left > 0 and pmfs[left] <= threshold:
+        left -= 1
+    right = gmin
+    while right < len(pmfs) - 1 and pmfs[right] <= threshold:
+        right += 1
+    basin_width = float(dists[right] - dists[left])
+
+    # Competing minima within pmf_cutoff of the global minimum
+    competing = []
+    for i in _local_minima_indices(pmfs):
+        if i == gmin:
+            continue
+        if (pmfs[i] - baseline) <= pmf_cutoff:
+            competing.append(i)
+
+    n_competing = len(competing)
+
+    # Barrier height to the nearest competing minimum (in index space)
+    barrier_height = np.inf
+    for ci in competing:
+        lo, hi = (gmin, ci) if gmin < ci else (ci, gmin)
+        if hi > lo:
+            barrier = float(np.max(pmfs[lo:hi + 1]) - baseline)
+            barrier_height = min(barrier_height, barrier)
+
+    reasons = []
+    if basin_width > max_basin_width:
+        reasons.append("flat_basin")
+    if n_competing > max_competing_minima:
+        reasons.append("multi_minimum")
+    if n_competing > 0 and barrier_height < min_barrier:
+        reasons.append("low_barrier")
+
+    return {
+        "passes": len(reasons) == 0,
+        "basin_width": basin_width,
+        "barrier_height": float(barrier_height) if np.isfinite(barrier_height) else None,
+        "n_competing_minima": n_competing,
+        "reasons": reasons,
+    }
+
+
+
+# FindSpatialNeighbors function
+# #############################
+
+def FindSpatialNeighbors(
+    centers: np.ndarray,
+    mode: str = "distance",
+    cutoff: float = 8.0,
+    k: int = 5,
+) -> list[list[int]]:
+    """Return spatial neighbor index lists for each residue."""
+    centers = np.asarray(centers, dtype=float)
+    n = centers.shape[0]
+    neighbors: list[list[int]] = [[] for _ in range(n)]
+
+    if mode == "distance":
+        for i in range(n):
+            for j in range(n):
+                if i == j:
+                    continue
+                if float(np.linalg.norm(centers[i] - centers[j])) <= cutoff:
+                    neighbors[i].append(j)
+    elif mode == "knn":
+        k_eff = min(k, n - 1)
+        if k_eff <= 0:
+            return neighbors
+        for i in range(n):
+            dists = [float(np.linalg.norm(centers[i] - centers[j])) for j in range(n) if j != i]
+            idxs = [j for j in range(n) if j != i]
+            order = np.argsort(dists)[:k_eff]
+            neighbors[i] = [idxs[o] for o in order]
+    else:
+        raise ValueError("neighbor mode must be 'distance' or 'knn'")
+
+    return neighbors
+
+
+
+def _pmf_profile_on_grid(dists: np.ndarray, pmfs: np.ndarray, grid: np.ndarray) -> np.ndarray:
+    """Interpolate a PMF onto a distance grid and min-subtract for shape comparison."""
+    profile = np.interp(grid, dists, pmfs, left=pmfs[0], right=pmfs[-1])
+    profile = profile - np.min(profile)
+    return profile
+
+
+
+# ScorePMFNeighborSimilarity function
+# ###################################
+
+def ScorePMFNeighborSimilarity(
+    index: int,
+    profiles: list[tuple[np.ndarray, np.ndarray]],
+    neighbor_lists: list[list[int]],
+    grid: np.ndarray,
+    min_neighbors: int = 2,
+    min_corr: float = 0.6,
+) -> dict:
+    """
+    Score PMF similarity between a residue and its spatial neighbors.
+
+    If the residue has fewer than min_neighbors spatial neighbors, the neighbor
+    test is skipped (applicable=None).
+    """
+    neighbors = neighbor_lists[index]
+    if len(neighbors) < min_neighbors:
+        return {"applicable": False, "passes": None, "corr": None, "reasons": []}
+
+    profile_i = _pmf_profile_on_grid(profiles[index][0], profiles[index][1], grid)
+    neighbor_profiles = [
+        _pmf_profile_on_grid(profiles[j][0], profiles[j][1], grid) for j in neighbors
+    ]
+    median_profile = np.median(neighbor_profiles, axis=0)
+
+    if np.std(profile_i) < 1e-12 or np.std(median_profile) < 1e-12:
+        corr = 1.0 if np.allclose(profile_i, median_profile) else 0.0
+    else:
+        corr = float(np.corrcoef(profile_i, median_profile)[0, 1])
+
+    reasons = []
+    if corr < min_corr:
+        reasons.append("neighbor_outlier")
+
+    return {
+        "applicable": True,
+        "passes": corr >= min_corr,
+        "corr": corr,
+        "reasons": reasons,
+    }
+
+
+
+# FilterResiduesByPMF function
+# ############################
+
+def FilterResiduesByPMF(
+    resids: list[int],
+    centers: list,
+    profiles: list[tuple[np.ndarray, np.ndarray]],
+    radii_per_res: list[list[float]],
+    mode: str,
+    pmf_cutoff: float,
+    basin_cutoff: float,
+    max_basin_width: float,
+    min_barrier: float,
+    max_competing_minima: int,
+    neighbor_mode: str,
+    neighbor_dist: float,
+    neighbor_k: int,
+    min_neighbor_corr: float,
+    min_neighbors: int,
+) -> tuple[list[int], np.ndarray, list[list[float]], list[dict]]:
+    """
+    Filter residues by PMF quality and/or neighbor similarity.
+
+    mode: none | quality | neighbors | both | either
+    """
+    n = len(resids)
+    centers_arr = np.asarray(centers, dtype=float)
+
+    if mode == "none":
+        report = [{"resid": resids[i], "kept": True, "reasons": []} for i in range(n)]
+        return resids, centers_arr, radii_per_res, report
+
+    neighbor_lists = FindSpatialNeighbors(centers_arr, neighbor_mode, neighbor_dist, neighbor_k)
+
+    d_min = min(float(p[0].min()) for p in profiles)
+    d_max = max(float(p[0].max()) for p in profiles)
+    grid = np.arange(d_min, d_max + 1.0, 1.0)
+
+    quality_scores = [
+        ScorePMFWellDefined(
+            profiles[i][0], profiles[i][1],
+            pmf_cutoff, basin_cutoff, max_basin_width, min_barrier, max_competing_minima,
+        )
+        for i in range(n)
+    ]
+    neighbor_scores = [
+        ScorePMFNeighborSimilarity(
+            i, profiles, neighbor_lists, grid, min_neighbors, min_neighbor_corr,
+        )
+        for i in range(n)
+    ]
+
+    kept_resids = []
+    kept_centers = []
+    kept_radii = []
+    report = []
+
+    for i in range(n):
+        q_pass = quality_scores[i]["passes"]
+        n_score = neighbor_scores[i]
+        n_pass = n_score["passes"]
+        n_applicable = n_score["applicable"]
+
+        if mode == "quality":
+            keep = q_pass
+        elif mode == "neighbors":
+            keep = n_applicable and n_pass is True
+        elif mode == "both":
+            keep = q_pass and (not n_applicable or n_pass is True)
+        elif mode == "either":
+            keep = q_pass or (n_applicable and n_pass is True)
+        else:
+            raise ValueError("pmfFilter must be one of: none, quality, neighbors, both, either")
+
+        reasons = []
+        if not keep:
+            if not q_pass:
+                reasons.extend(quality_scores[i]["reasons"])
+            if n_applicable and n_pass is False:
+                reasons.extend(n_score["reasons"])
+            elif mode == "neighbors" and not n_applicable:
+                reasons.append("insufficient_neighbors")
+
+        entry = {
+            "resid": resids[i],
+            "kept": keep,
+            "quality_pass": q_pass,
+            "neighbor_pass": n_pass,
+            "neighbor_applicable": n_applicable,
+            "basin_width": quality_scores[i]["basin_width"],
+            "barrier_height": quality_scores[i]["barrier_height"],
+            "n_competing_minima": quality_scores[i]["n_competing_minima"],
+            "neighbor_corr": n_score["corr"],
+            "reasons": reasons,
+        }
+        report.append(entry)
+
+        if keep:
+            kept_resids.append(resids[i])
+            kept_centers.append(centers[i])
+            kept_radii.append(radii_per_res[i])
+
+    n_kept = len(kept_resids)
+    n_rejected = n - n_kept
+    print("")
+    print("PMF filter (%s): kept %d / %d residues" % (mode, n_kept, n))
+    if n_rejected > 0:
+        print("Rejected residues:")
+        for entry in report:
+            if not entry["kept"]:
+                print("  resid %d: %s" % (entry["resid"], ", ".join(entry["reasons"]) or "filtered"))
+
+    return kept_resids, np.asarray(kept_centers, dtype=float), kept_radii, report
 
 
 
@@ -536,6 +833,66 @@ def ParseCommandline():
 						required=False,
 						default=0)
 
+	parser.add_argument("--pmfFilter",
+						choices=["none", "quality", "neighbors", "both", "either"],
+						help="PMF quality filter mode before hotspot detection",
+						required=False,
+						default="none")
+
+	parser.add_argument("--maxBasinWidth",
+						type=float,
+						help="Maximum basin width (Angstrom) at basinCutoff above the PMF minimum",
+						required=False,
+						default=6.0)
+
+	parser.add_argument("--basinCutoff",
+						type=float,
+						help="Energy above minimum (kcal/mol) used to measure basin width",
+						required=False,
+						default=1.0)
+
+	parser.add_argument("--minBarrier",
+						type=float,
+						help="Minimum barrier height (kcal/mol) to the next competing PMF minimum",
+						required=False,
+						default=1.0)
+
+	parser.add_argument("--maxCompetingMinima",
+						type=int,
+						help="Maximum number of competing PMF minima within pmfCutoff of the global minimum",
+						required=False,
+						default=1)
+
+	parser.add_argument("--neighborMode",
+						choices=["distance", "knn"],
+						help="How to define spatial neighbors for PMF similarity",
+						required=False,
+						default="distance")
+
+	parser.add_argument("--neighborDist",
+						type=float,
+						help="C-alpha distance cutoff (Angstrom) for neighbor mode 'distance'",
+						required=False,
+						default=8.0)
+
+	parser.add_argument("--neighborK",
+						type=int,
+						help="Number of nearest neighbors for neighbor mode 'knn'",
+						required=False,
+						default=5)
+
+	parser.add_argument("--minNeighborCorr",
+						type=float,
+						help="Minimum Pearson correlation vs median neighbor PMF profile",
+						required=False,
+						default=0.6)
+
+	parser.add_argument("--minNeighbors",
+						type=int,
+						help="Minimum spatial neighbors required to apply the neighbor similarity test",
+						required=False,
+						default=2)
+
 	args = parser.parse_args()
 	
 	# --version
@@ -603,6 +960,46 @@ def ParseCommandline():
 	# --minInliers
 	if args.minInliers < 0:
 		print("The minInliers should be larger or equal than 0 - quitting with error code 1")
+		sys.exit(1)
+	
+	# --maxBasinWidth
+	if args.maxBasinWidth <= 0.0:
+		print("The maxBasinWidth should be larger than 0 - quitting with error code 1")
+		sys.exit(1)
+	
+	# --basinCutoff
+	if args.basinCutoff <= 0.0:
+		print("The basinCutoff should be larger than 0 - quitting with error code 1")
+		sys.exit(1)
+	
+	# --minBarrier
+	if args.minBarrier < 0.0:
+		print("The minBarrier should be larger or equal than 0 - quitting with error code 1")
+		sys.exit(1)
+	
+	# --maxCompetingMinima
+	if args.maxCompetingMinima < 0:
+		print("The maxCompetingMinima should be larger or equal than 0 - quitting with error code 1")
+		sys.exit(1)
+	
+	# --neighborDist
+	if args.neighborDist <= 0.0:
+		print("The neighborDist should be larger than 0 - quitting with error code 1")
+		sys.exit(1)
+	
+	# --neighborK
+	if args.neighborK < 1:
+		print("The neighborK should be larger or equal than 1 - quitting with error code 1")
+		sys.exit(1)
+	
+	# --minNeighborCorr
+	if args.minNeighborCorr < -1.0 or args.minNeighborCorr > 1.0:
+		print("The minNeighborCorr should be between -1 and 1 - quitting with error code 1")
+		sys.exit(1)
+	
+	# --minNeighbors
+	if args.minNeighbors < 0:
+		print("The minNeighbors should be larger or equal than 0 - quitting with error code 1")
 		sys.exit(1)
 	
 	# Return
@@ -757,6 +1154,7 @@ def CalculateDistances(trajectoryFiles, distancesOutFile, parmFile, resids, liga
 
 if __name__ == "__main__":
 
+	PROFILES = []
 	RADII_PER_RES = []
 
 	# Parse command-line
@@ -842,10 +1240,16 @@ if __name__ == "__main__":
 		# Extract candidate radii from the PMF minima
 		# ###########################################
 	
-		radii = ExtractRadii("pmf-c2-tmp.txt.xvg", args.pmfCutoff, args.maxMinima)
-		if len(radii) == 0:
+		parsed = ParsePMF("pmf-c2-tmp.txt.xvg")
+		if parsed is None:
 			print("Error: Could not extract PMF data for residue %d - quitting with error code 1" % RESIDS[index])
 			sys.exit(1)
+		dists, pmfs = parsed
+		radii = ExtractRadii(dists, pmfs, args.pmfCutoff, args.maxMinima)
+		if len(radii) == 0:
+			print("Error: Could not extract PMF minima for residue %d - quitting with error code 1" % RESIDS[index])
+			sys.exit(1)
+		PROFILES.append((dists, pmfs))
 		RADII_PER_RES.append(radii)
 	
 		# Cleanup
@@ -859,10 +1263,34 @@ if __name__ == "__main__":
 		if os.path.exists("pmf-c3-tmp.txt.xvg"): os.remove("pmf-c3-tmp.txt.xvg")
 
 
+	# Filter PMF profiles
+	# ###################
+
+	RESIDS, centers, RADII_PER_RES, pmf_report = FilterResiduesByPMF(
+		RESIDS,
+		COORDS,
+		PROFILES,
+		RADII_PER_RES,
+		args.pmfFilter,
+		args.pmfCutoff,
+		args.basinCutoff,
+		args.maxBasinWidth,
+		args.minBarrier,
+		args.maxCompetingMinima,
+		args.neighborMode,
+		args.neighborDist,
+		args.neighborK,
+		args.minNeighborCorr,
+		args.minNeighbors,
+	)
+
+	if len(RESIDS) < 4:
+		print("Error: Fewer than 4 residues remain after PMF filtering - try relaxing filter settings - quitting with error code 1")
+		sys.exit(1)
+
+
 	# Detect hotspots
 	# ###############
-
-	centers = np.asarray(COORDS)
 
 	minInliers = args.minInliers if args.minInliers > 0 else None
 	k = args.hotspots if args.hotspots > 0 else None
